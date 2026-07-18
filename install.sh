@@ -1,61 +1,79 @@
 #!/bin/bash
 
-echo "============================================================"
-echo "    Tafreshi CID Module Installer for Issabel / Asterisk"
-echo "    Company: Ertebat Center (ertebatcenter.com)"
-echo "============================================================"
+# =========================================================================
+# Tafreshi CallerID Normalization Script for Issabel
+# =========================================================================
 
-# 1. Inject Context
-CUSTOM_CONF="/etc/asterisk/extensions_custom.conf"
-if grep -q "\[tafreshicid\]" "$CUSTOM_CONF"; then
-    echo "[*] Context [tafreshicid] already exists in $CUSTOM_CONF. Skipping injection."
-else
-    echo "[*] Injecting [tafreshicid] into $CUSTOM_CONF..."
-    cat <<EOF >> "$CUSTOM_CONF"
+echo "======================================================"
+echo "  Tafreshi CallerID Normalization Setup (Issabel)     "
+echo "======================================================"
 
-[tafreshicid]
-exten => _X.,1,NoOp(Tafreshi CID Normalization)
-exten => _X.,n,Set(CALLERID(num)=0\${CALLERID(num):-10})
-exten => _X.,n,Goto(from-trunk,\${EXTEN},1)
-EOF
-fi
-
-# 2. Extract DB Credentials
-echo "[*] Extracting Database credentials from amportal.conf..."
-DB_USER=$(grep -E "^AMPDBUSER" /etc/amportal.conf | cut -d'=' -f2 | tr -d ' ' | tr -d '"')
-DB_PASS=$(grep -E "^AMPDBPASS" /etc/amportal.conf | cut -d'=' -f2 | tr -d ' ' | tr -d '"')
+# 1. Get Database Credentials automatically from amportal.conf
+echo "[*] Extracting database credentials..."
+DB_USER=$(grep -w 'AMPDBUSER' /etc/amportal.conf | cut -d '=' -f2 | tr -d ' ' | tr -d '\r' | tr -d '\n')
+DB_PASS=$(grep -w 'AMPDBPASS' /etc/amportal.conf | cut -d '=' -f2 | tr -d ' ' | tr -d '\r' | tr -d '\n')
 
 if [ -z "$DB_USER" ] || [ -z "$DB_PASS" ]; then
-    echo "[-] Error: Could not extract DB credentials."
+    echo "[!] Error: Could not extract database credentials."
     exit 1
 fi
-echo "[+] Credentials extracted successfully."
 
-# 3. Fetch Trunks
-echo "[*] Fetching Trunks from Database..."
+# 2. Inject Context into extensions_custom.conf
+echo "[*] Injecting 'tafreshicid' context into extensions_custom.conf..."
+CUSTOM_CONF="/etc/asterisk/extensions_custom.conf"
+
+if ! grep -q "\[tafreshicid\]" "$CUSTOM_CONF"; then
+    cat << 'EOF' >> "$CUSTOM_CONF"
+
+[tafreshicid]
+exten => _.,1,NoOp(Tafreshi CallerID Normalization)
+exten => _.,n,Set(CALLERID(num)=${CALLERID(num):-10})
+exten => _.,n,Set(CALLERID(num)=0${CALLERID(num)})
+exten => _.,n,Goto(from-trunk,${EXTEN},1)
+EOF
+    echo "[+] Context 'tafreshicid' added successfully."
+else
+    echo "[-] Context 'tafreshicid' already exists. Skipping."
+fi
+
+# 3. List available Trunks
+echo "------------------------------------------------------"
+echo "Available Trunks:"
 mysql -u"$DB_USER" -p"$DB_PASS" asterisk -e "SELECT trunkid, name, channelid FROM trunks;"
+echo "------------------------------------------------------"
 
-read -p "Enter the 'name' of the Trunk you want to apply tafreshicid context: " TRUNK_NAME
-
-# 4. Get Channel ID
-TRUNK_CHANNELID=$(mysql -u"$DB_USER" -p"$DB_PASS" asterisk -sN -e "SELECT channelid FROM trunks WHERE name='$TRUNK_NAME';")
+read -p "Enter the 'channelid' of the trunk you want to modify: " TRUNK_CHANNELID
 
 if [ -z "$TRUNK_CHANNELID" ]; then
-    echo "[-] Error: Trunk '$TRUNK_NAME' not found."
+    echo "[!] No trunk selected. Exiting."
     exit 1
 fi
 
-# 5. Update Context in sip and pjsip tables
+TRUNK_NAME=$(mysql -u"$DB_USER" -p"$DB_PASS" asterisk -se "SELECT name FROM trunks WHERE channelid='$TRUNK_CHANNELID';" | tr -d '\r' | tr -d '\n')
+
+if [ -z "$TRUNK_NAME" ]; then
+    echo "[!] Trunk channelid not found in database. Exiting."
+    exit 1
+fi
+
+# 4. Update Context in sip and pjsip tables (Using DELETE & INSERT for reliability)
 echo "[*] Updating Trunk '$TRUNK_NAME' (Channel ID: $TRUNK_CHANNELID) context to 'tafreshicid'..."
 
-# Update SIP table
-mysql -u"$DB_USER" -p"$DB_PASS" asterisk -e "UPDATE sip SET data='tafreshicid' WHERE id='$TRUNK_CHANNELID' AND keyword='context';"
-# Update PJSIP table (if applicable)
-mysql -u"$DB_USER" -p"$DB_PASS" asterisk -e "UPDATE pjsip SET data='tafreshicid' WHERE id='$TRUNK_CHANNELID' AND keyword='context';"
+# --- Update SIP table ---
+mysql -u"$DB_USER" -p"$DB_PASS" asterisk -e "DELETE FROM sip WHERE id='$TRUNK_CHANNELID' AND keyword='context';"
+mysql -u"$DB_USER" -p"$DB_PASS" asterisk -e "INSERT INTO sip (id, keyword, data, flags) VALUES ('$TRUNK_CHANNELID', 'context', 'tafreshicid', 0);"
 
-# 6. Apply Changes
-echo "[*] Reloading Asterisk and Issabel modules..."
+# --- Update PJSIP table (Hide errors if system does not use PJSIP) ---
+mysql -u"$DB_USER" -p"$DB_PASS" asterisk -e "DELETE FROM pjsip WHERE id='$TRUNK_CHANNELID' AND keyword='context';" 2>/dev/null
+mysql -u"$DB_USER" -p"$DB_PASS" asterisk -e "INSERT INTO pjsip (id, keyword, data, flags) VALUES ('$TRUNK_CHANNELID', 'context', 'tafreshicid', 0);" 2>/dev/null
+
+echo "[+] Trunk updated successfully."
+
+# 5. Reload Asterisk & FreePBX core
+echo "[*] Reloading Asterisk and Web Interface..."
 asterisk -rx "core reload"
-/var/lib/asterisk/bin/module_admin reload
+/var/lib/asterisk/bin/module_admin reload > /dev/null 2>&1
 
-echo "[+] Installation and configuration completed successfully!"
+echo "======================================================"
+echo "  Setup Completed Successfully!                       "
+echo "======================================================"
