@@ -1,85 +1,74 @@
 #!/bin/bash
 
-# ==============================================================================
-# TafreshiCID Modifier - Automated Installer for Issabel/Asterisk
-# Author: Tafreshi (ertebatcenter.com)
-# ==============================================================================
+echo "=================================================="
+echo "  Tafreshi CallerID Normalization Installer"
+echo "=================================================="
 
-echo "======================================================="
-echo "   TafreshiCID Modifier Installer (Issabel/Asterisk)   "
-echo "======================================================="
-echo ""
-
-# 1. Download and apply the Dialplan context
-echo "[1/4] Adding [tafreshicid] context to extensions_custom.conf..."
-
-# Checking if context already exists to avoid duplication
-if grep -q "\[tafreshicid\]" /etc/asterisk/extensions_custom.conf; then
-    echo "Context [tafreshicid] already exists. Skipping insertion."
-else
+# بخش اول: اضافه کردن کانتکست به فایل استریسک
+echo "[1/5] Injecting [tafreshicid] context into extensions_custom.conf..."
+if ! grep -q "\[tafreshicid\]" /etc/asterisk/extensions_custom.conf; then
     cat << 'EOF' >> /etc/asterisk/extensions_custom.conf
 
-; --- Start TafreshiCID Modifier ---
 [tafreshicid]
-exten => _X.,1,NoOp(TafreshiCID: Modifying CallerID for Iran)
-exten => _X.,n,Set(CALLERID(num)=${CALLERID(num):-10}) ; Keep only last 10 digits
-exten => _X.,n,Set(CALLERID(num)=0${CALLERID(num)})   ; Add 0 at the beginning
+exten => _X.,1,NoOp(--- Tafreshi CID Normalization ---)
+exten => _X.,n,Set(CALLERID(num)=${FILTER(0-9,${CALLERID(num)})})
+exten => _X.,n,ExecIf($["${CALLERID(num):0:3}" = "098"]?Set(CALLERID(num)=0${CALLERID(num):3}))
+exten => _X.,n,ExecIf($["${CALLERID(num):0:2}" = "98"]?Set(CALLERID(num)=0${CALLERID(num):2}))
+exten => _X.,n,ExecIf($["${CALLERID(num):0:3}" = "021"]?Set(CALLERID(num)=${CALLERID(num):3}))
+exten => _X.,n,ExecIf($["${CALLERID(num):0:2}" = "21"]?Set(CALLERID(num)=${CALLERID(num):2}))
 exten => _X.,n,Goto(from-trunk,${EXTEN},1)
-; --- End TafreshiCID Modifier ---
-
 EOF
     echo "Context added successfully."
+else
+    echo "Context [tafreshicid] already exists."
 fi
 
-# 2. Fetch SIP Trunks from Issabel Database
+# بخش دوم: دریافت اطلاعات دیتابیس از کاربر در زمان نصب
 echo ""
-echo "[2/4] Fetching SIP Trunks from database..."
-# Querying Issabel's Asterisk DB for SIP trunks
-TRUNKS=$(mysql -u root asterisk -N -B -e "SELECT DISTINCT id FROM sip WHERE keyword='host' AND id NOT LIKE '%_custom';")
+echo "[2/5] Database Configuration"
+read -p "Enter MySQL Username (e.g., root): " DB_USER
+read -s -p "Enter MySQL Password: " DB_PASS
+echo ""
 
-if [ -z "$TRUNKS" ]; then
+# بخش سوم: استخراج لیست ترانک‌ها با اطلاعات وارد شده
+echo "[3/5] Fetching SIP Trunks from database..."
+TRUNK_LIST=$(mysql -u"$DB_USER" -p"$DB_PASS" asterisk -N -B -e "SELECT name FROM sip WHERE keyword='host' GROUP BY name;" 2>/dev/null)
+
+if [ $? -ne 0 ]; then
+    echo "Error: Database connection failed! Incorrect username or password."
+    exit 1
+fi
+
+if [ -z "$TRUNK_LIST" ]; then
     echo "Error: No SIP trunks found in the database!"
     exit 1
 fi
 
-# 3. Create an interactive menu for trunk selection
-echo ""
-echo "Please select the Trunk you want to apply the CallerID fix to:"
-select TRUNK_NAME in $TRUNKS "Exit"; do
-    if [ "$TRUNK_NAME" = "Exit" ]; then
-        echo "Exiting installation."
-        exit 0
-    elif [ -n "$TRUNK_NAME" ]; then
-        echo "You selected: $TRUNK_NAME"
-        break
-    else
-        echo "Invalid selection. Please try again."
-    fi
+# بخش چهارم: نمایش ترانک‌ها و انتخاب توسط کاربر
+echo "[4/5] Available SIP Trunks:"
+TRUNKS=($TRUNK_LIST)
+for i in "${!TRUNKS[@]}"; do
+    echo "$((i+1)). ${TRUNKS[$i]}"
 done
 
-# 4. Update Trunk Context in Database
 echo ""
-echo "[3/4] Updating context for trunk '$TRUNK_NAME' to 'tafreshicid'..."
+read -p "Select the trunk number to apply [tafreshicid] context: " TRUNK_NUM
 
-# Check if context keyword exists for this trunk, update it, or insert if missing
-CONTEXT_EXISTS=$(mysql -u root asterisk -N -B -e "SELECT count(*) FROM sip WHERE id='$TRUNK_NAME' AND keyword='context';")
-
-if [ "$CONTEXT_EXISTS" -gt 0 ]; then
-    mysql -u root asterisk -e "UPDATE sip SET data='tafreshicid' WHERE id='$TRUNK_NAME' AND keyword='context';"
-else
-    mysql -u root asterisk -e "INSERT INTO sip (id, keyword, data, flags) VALUES ('$TRUNK_NAME', 'context', 'tafreshicid', 2);"
+if ! [[ "$TRUNK_NUM" =~ ^[0-9]+$ ]] || [ "$TRUNK_NUM" -lt 1 ] || [ "$TRUNK_NUM" -gt "${#TRUNKS[@]}" ]; then
+    echo "Invalid selection. Installation aborted."
+    exit 1
 fi
 
-echo "Database updated successfully."
+SELECTED_TRUNK="${TRUNKS[$((TRUNK_NUM-1))]}"
+echo "You selected: $SELECTED_TRUNK"
 
-# 5. Apply Changes (Reload Asterisk & FreePBX core)
-echo ""
-echo "[4/4] Applying changes and reloading system..."
-/var/lib/asterisk/bin/retrieve_conf > /dev/null 2>&1
-asterisk -rx "core reload" > /dev/null 2>&1
+# بخش پنجم: اعمال تغییرات در دیتابیس و ری‌استارت استریسک
+echo "[5/5] Updating trunk context in database and reloading Asterisk..."
+mysql -u"$DB_USER" -p"$DB_PASS" asterisk -e "UPDATE sip SET data='tafreshicid' WHERE name='$SELECTED_TRUNK' AND keyword='context';"
 
-echo ""
-echo "======================================================="
-echo " Installation Complete! CallerID is now normalized."
-echo " Visit ertebatcenter.com for more VoIP solutions."
-echo "======================================================="
+asterisk -rx "dialplan reload"
+asterisk -rx "core reload"
+
+echo "=================================================="
+echo "  Installation Completed Successfully!"
+echo "=================================================="
