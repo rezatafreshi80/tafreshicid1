@@ -23,19 +23,24 @@ else
     echo "Context [tafreshicid] already exists."
 fi
 
-# بخش دوم: دریافت اطلاعات دیتابیس از کاربر در زمان نصب
+# بخش دوم: خواندن خودکار اطلاعات دیتابیس از ایزابل
 echo ""
-echo "[2/5] Database Configuration"
-read -p "Enter MySQL Username (e.g., root): " DB_USER
-read -s -p "Enter MySQL Password: " DB_PASS
-echo ""
+echo "[2/5] Auto-detecting Database Configuration..."
+DB_USER="root"
+DB_PASS=$(grep -w "mysqlrootpwd" /etc/issabel.conf | cut -d'=' -f2)
 
-# بخش سوم: استخراج لیست ترانک‌ها با اطلاعات وارد شده
+if [ -z "$DB_PASS" ]; then
+    echo "Error: Could not find database password in /etc/issabel.conf!"
+    exit 1
+fi
+echo "Database credentials loaded automatically."
+
+# بخش سوم: استخراج لیست ترانک‌ها از دیتابیس
 echo "[3/5] Fetching SIP Trunks from database..."
 TRUNK_LIST=$(mysql -u"$DB_USER" -p"$DB_PASS" asterisk -N -B -e "SELECT name FROM sip WHERE keyword='host' GROUP BY name;" 2>/dev/null)
 
 if [ $? -ne 0 ]; then
-    echo "Error: Database connection failed! Incorrect username or password."
+    echo "Error: Database connection failed! Please check MariaDB status."
     exit 1
 fi
 
