@@ -27,7 +27,7 @@ fi
 echo ""
 echo "[*] Extracting Database credentials from extensions_additional.conf..."
 
-# 2. استخراج یوزر و پسورد دیتابیس از extensions_additional.conf
+# 2. استخراج یوزر و پسورد دیتابیس
 EXT_ADDITIONAL="/etc/asterisk/extensions_additional.conf"
 
 if [ ! -f "$EXT_ADDITIONAL" ]; then
@@ -35,27 +35,25 @@ if [ ! -f "$EXT_ADDITIONAL" ]; then
     exit 1
 fi
 
-# پیدا کردن مقادیر با حذف فاصله‌ها و کاراکترهای اضافی
 DBUSER=$(grep -w "^AMPDBUSER" "$EXT_ADDITIONAL" | cut -d= -f2 | tr -d ' ' | tr -d '\r')
 DBPASS=$(grep -w "^AMPDBPASS" "$EXT_ADDITIONAL" | cut -d= -f2 | tr -d ' ' | tr -d '\r')
 
 if [ -z "$DBUSER" ] || [ -z "$DBPASS" ]; then
-    echo "[-] Error: Could not extract DBUSER or DBPASS from $EXT_ADDITIONAL."
-    echo "    Make sure the [globals] section contains AMPDBUSER and AMPDBPASS."
+    echo "[-] Error: Could not extract DBUSER or DBPASS."
     exit 1
 fi
 
 echo "[+] Credentials extracted successfully."
 echo ""
 
-# 3. دریافت لیست ترانک‌ها از دیتابیس و نمایش به کاربر
+# 3. دریافت لیست ترانک‌ها
 echo "[*] Fetching Trunks from Database..."
 echo "------------------------------------------------------------"
 mysql -u"$DBUSER" -p"$DBPASS" -e "SELECT trunkid, name, channelid FROM asterisk.trunks;"
 echo "------------------------------------------------------------"
 echo ""
 
-# 4. دریافت نام ترانک از کاربر
+# 4. دریافت نام ترانک
 read -p "Enter the 'name' of the Trunk you want to apply tafreshicid context: " TRUNK_NAME
 
 if [ -z "$TRUNK_NAME" ]; then
@@ -63,23 +61,27 @@ if [ -z "$TRUNK_NAME" ]; then
     exit 1
 fi
 
-# 5. به‌روزرسانی کانتکست ترانک در دیتابیس
+# 5. پیدا کردن Channel ID و آپدیت کانتکست در جداول SIP/PJSIP/IAX
 echo "[*] Updating Trunk '$TRUNK_NAME' context to 'tafreshicid'..."
-mysql -u"$DBUSER" -p"$DBPASS" -e "UPDATE asterisk.trunks SET context='tafreshicid' WHERE name='$TRUNK_NAME';"
 
-# بررسی موفقیت‌آمیز بودن کوئری
-if [ $? -eq 0 ]; then
-    echo "[+] Trunk updated successfully in database."
-else
-    echo "[-] Error: Database update failed."
+# استخراج channelid برای پیدا کردن رکورد در جداول sip/pjsip
+CHANNEL_ID=$(mysql -u"$DBUSER" -p"$DBPASS" -sN -e "SELECT channelid FROM asterisk.trunks WHERE name='$TRUNK_NAME' LIMIT 1;")
+
+if [ -z "$CHANNEL_ID" ]; then
+    echo "[-] Error: Could not find Trunk '$TRUNK_NAME' in asterisk.trunks."
     exit 1
 fi
 
-# 6. اعمال تغییرات در استریسک و وب سرویس
+# آپدیت کانتکست در جداول مرتبط (خطاهای احتمالی به dev/null ارسال می‌شوند تا در صورت عدم استفاده از یک پروتکل خطایی چاپ نشود)
+mysql -u"$DBUSER" -p"$DBPASS" -e "UPDATE asterisk.sip SET data='tafreshicid' WHERE id='$CHANNEL_ID' AND keyword='context';" 2>/dev/null
+mysql -u"$DBUSER" -p"$DBPASS" -e "UPDATE asterisk.pjsip SET data='tafreshicid' WHERE id='$CHANNEL_ID' AND keyword='context';" 2>/dev/null
+mysql -u"$DBUSER" -p"$DBPASS" -e "UPDATE asterisk.iax SET data='tafreshicid' WHERE id='$CHANNEL_ID' AND keyword='context';" 2>/dev/null
+
+echo "[+] Trunk context updated successfully in database."
+
+# 6. اعمال تغییرات
 echo "[*] Applying changes to Asterisk..."
-# آپدیت سیستم فری‌پی‌بی‌اکس تا تنظیمات جدید را بنویسد
 asterisk -rx "core reload" > /dev/null 2>&1
-# برای اطمینان از اعمال تغییرات در دیتابیس ایزابل/FreePBX، نیاز به ریلود ماژول‌هاست
 /var/lib/asterisk/bin/module_admin reload > /dev/null 2>&1
 
 echo "[+] Asterisk reloaded successfully."
