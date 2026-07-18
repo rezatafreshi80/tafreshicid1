@@ -23,14 +23,14 @@ else
     echo "Context [tafreshicid] already exists."
 fi
 
-# بخش دوم: خواندن خودکار اطلاعات دیتابیس از ایزابل
+# بخش دوم: خواندن خودکار اطلاعات دیتابیس از استریسک
 echo ""
 echo "[2/5] Auto-detecting Database Configuration..."
-DB_USER="root"
-DB_PASS=$(grep -w "mysqlrootpwd" /etc/issabel.conf | cut -d'=' -f2)
+DB_USER=$(grep -E "^AMPDBUSER" /etc/amportal.conf | cut -d'=' -f2 | tr -d ' \r\n"\'')
+DB_PASS=$(grep -E "^AMPDBPASS" /etc/amportal.conf | cut -d'=' -f2 | tr -d ' \r\n"\'')
 
 if [ -z "$DB_PASS" ]; then
-    echo "Error: Could not find database password in /etc/issabel.conf!"
+    echo "Error: Could not find database password in /etc/amportal.conf!"
     exit 1
 fi
 echo "Database credentials loaded automatically."
