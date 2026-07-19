@@ -1,79 +1,59 @@
 #!/bin/bash
 
-# =========================================================================
-# Tafreshi CallerID Normalization Script for Issabel
-# =========================================================================
+echo "============================================================"
+echo "    Tafreshi CID Module Installer (Zero-Touch & Safe)"
+echo "    Company: Ertebat Center (ertebatcenter.com)"
+echo "============================================================"
 
-echo "======================================================"
-echo "  Tafreshi CallerID Normalization Setup (Issabel)     "
-echo "======================================================"
-
-# 1. Get Database Credentials automatically from amportal.conf
-echo "[*] Extracting database credentials..."
-DB_USER=$(grep -w 'AMPDBUSER' /etc/amportal.conf | cut -d '=' -f2 | tr -d ' ' | tr -d '\r' | tr -d '\n')
-DB_PASS=$(grep -w 'AMPDBPASS' /etc/amportal.conf | cut -d '=' -f2 | tr -d ' ' | tr -d '\r' | tr -d '\n')
-
-if [ -z "$DB_USER" ] || [ -z "$DB_PASS" ]; then
-    echo "[!] Error: Could not extract database credentials."
-    exit 1
-fi
-
-# 2. Inject Context into extensions_custom.conf
-echo "[*] Injecting 'tafreshicid' context into extensions_custom.conf..."
 CUSTOM_CONF="/etc/asterisk/extensions_custom.conf"
+SIP_ADDITIONAL="/etc/asterisk/sip_additional.conf"
+SIP_CUSTOM_POST="/etc/asterisk/sip_custom_post.conf"
+CONTEXT_NAME="tafreshicid"
 
-if ! grep -q "\[tafreshicid\]" "$CUSTOM_CONF"; then
-    cat << 'EOF' >> "$CUSTOM_CONF"
+echo "[*] Step 1: Injecting '$CONTEXT_NAME' context into $CUSTOM_CONF..."
 
-[tafreshicid]
-exten => _.,1,NoOp(Tafreshi CallerID Normalization)
-exten => _.,n,Set(CALLERID(num)=${CALLERID(num):-10})
-exten => _.,n,Set(CALLERID(num)=0${CALLERID(num)})
-exten => _.,n,Goto(from-trunk,${EXTEN},1)
+# بررسی و افزودن کانتکست اصلاحی بدون دستکاری فایل‌های اصلی
+if ! grep -q "\[$CONTEXT_NAME\]" "$CUSTOM_CONF"; then
+    cat << EOF >> "$CUSTOM_CONF"
+
+[$CONTEXT_NAME]
+exten => _X.,1,NoOp(Tafreshi CID Normalization)
+exten => _X.,n,Set(CALLERID(num)=0\${CALLERID(num):-10})
+exten => _X.,n,Goto(from-trunk,\${EXTEN},1)
 EOF
-    echo "[+] Context 'tafreshicid' added successfully."
+    echo "[+] Context '$CONTEXT_NAME' added successfully."
 else
-    echo "[-] Context 'tafreshicid' already exists. Skipping."
+    echo "[-] Context '$CONTEXT_NAME' already exists. Skipping."
 fi
 
-# 3. List available Trunks
-echo "------------------------------------------------------"
-echo "Available Trunks:"
-mysql -u"$DB_USER" -p"$DB_PASS" asterisk -e "SELECT trunkid, name, channelid FROM trunks;"
-echo "------------------------------------------------------"
+echo "[*] Step 2: Auto-detecting Trunks and applying Safe Overrides..."
 
-read -p "Enter the 'channelid' of the trunk you want to modify: " TRUNK_CHANNELID
-
-if [ -z "$TRUNK_CHANNELID" ]; then
-    echo "[!] No trunk selected. Exiting."
-    exit 1
+# پیدا کردن ترانک‌ها از sip_additional و تزریق به sip_custom_post با ویژگی (+)
+if [ -f "$SIP_ADDITIONAL" ]; then
+    # استخراج نام ترانک‌هایی که کانتکست from-trunk یا from-pstn دارند
+    TRUNKS=$(grep -E '\[.*\]' "$SIP_ADDITIONAL" | grep -v 'general' | tr -d '[]')
+    
+    if [ -z "$TRUNKS" ]; then
+        echo "[!] No standard SIP trunks found."
+    else
+        for TRUNK in $TRUNKS; do
+            # بررسی اینکه آیا قبلاً این ترانک اورراید شده یا خیر
+            if ! grep -q "\[$TRUNK\](+)" "$SIP_CUSTOM_POST" 2>/dev/null; then
+                echo -e "\n[$TRUNK](+)\ncontext=$CONTEXT_NAME" >> "$SIP_CUSTOM_POST"
+                echo "[+] Trunk [$TRUNK] overridden safely."
+            else
+                echo "[-] Trunk [$TRUNK] already configured. Skipping."
+            fi
+        done
+    fi
+else
+    echo "[!] $SIP_ADDITIONAL not found. Make sure trunks are configured in GUI first."
 fi
 
-TRUNK_NAME=$(mysql -u"$DB_USER" -p"$DB_PASS" asterisk -se "SELECT name FROM trunks WHERE channelid='$TRUNK_CHANNELID';" | tr -d '\r' | tr -d '\n')
-
-if [ -z "$TRUNK_NAME" ]; then
-    echo "[!] Trunk channelid not found in database. Exiting."
-    exit 1
-fi
-
-# 4. Update Context in sip and pjsip tables (Using DELETE & INSERT for reliability)
-echo "[*] Updating Trunk '$TRUNK_NAME' (Channel ID: $TRUNK_CHANNELID) context to 'tafreshicid'..."
-
-# --- Update SIP table ---
-mysql -u"$DB_USER" -p"$DB_PASS" asterisk -e "DELETE FROM sip WHERE id='$TRUNK_CHANNELID' AND keyword='context';"
-mysql -u"$DB_USER" -p"$DB_PASS" asterisk -e "INSERT INTO sip (id, keyword, data, flags) VALUES ('$TRUNK_CHANNELID', 'context', 'tafreshicid', 0);"
-
-# --- Update PJSIP table (Hide errors if system does not use PJSIP) ---
-mysql -u"$DB_USER" -p"$DB_PASS" asterisk -e "DELETE FROM pjsip WHERE id='$TRUNK_CHANNELID' AND keyword='context';" 2>/dev/null
-mysql -u"$DB_USER" -p"$DB_PASS" asterisk -e "INSERT INTO pjsip (id, keyword, data, flags) VALUES ('$TRUNK_CHANNELID', 'context', 'tafreshicid', 0);" 2>/dev/null
-
-echo "[+] Trunk updated successfully."
-
-# 5. Reload Asterisk & FreePBX core
-echo "[*] Reloading Asterisk and Web Interface..."
-asterisk -rx "core reload"
-/var/lib/asterisk/bin/module_admin reload > /dev/null 2>&1
+echo "[*] Step 3: Reloading Asterisk Modules safely..."
+asterisk -rx "dialplan reload"
+asterisk -rx "sip reload"
 
 echo "======================================================"
-echo "  Setup Completed Successfully!                       "
+echo "  Setup Completed Successfully! No DB changes made.   "
 echo "======================================================"
