@@ -1,59 +1,44 @@
 #!/bin/bash
 
-echo "============================================================"
-echo "    Tafreshi CID Module Installer (Zero-Touch & Safe)"
-echo "    Company: Ertebat Center (ertebatcenter.com)"
-echo "============================================================"
+echo "=========================================="
+echo "    Tafreshi CallerID Normalization       "
+echo "=========================================="
 
-CUSTOM_CONF="/etc/asterisk/extensions_custom.conf"
-SIP_ADDITIONAL="/etc/asterisk/sip_additional.conf"
-SIP_CUSTOM_POST="/etc/asterisk/sip_custom_post.conf"
-CONTEXT_NAME="tafreshicid"
+# 1. Ask for Trunk Name
+read -p "Please enter the Trunk Name (e.g., Trunk_Shatel): " TRUNK_NAME
 
-echo "[*] Step 1: Injecting '$CONTEXT_NAME' context into $CUSTOM_CONF..."
-
-# بررسی و افزودن کانتکست اصلاحی بدون دستکاری فایل‌های اصلی
-if ! grep -q "\[$CONTEXT_NAME\]" "$CUSTOM_CONF"; then
-    cat << EOF >> "$CUSTOM_CONF"
-
-[$CONTEXT_NAME]
-exten => _X.,1,NoOp(Tafreshi CID Normalization)
-exten => _X.,n,Set(CALLERID(num)=0\${CALLERID(num):-10})
-exten => _X.,n,Goto(from-trunk,\${EXTEN},1)
-EOF
-    echo "[+] Context '$CONTEXT_NAME' added successfully."
-else
-    echo "[-] Context '$CONTEXT_NAME' already exists. Skipping."
+if [ -z "$TRUNK_NAME" ]; then
+    echo "Error: Trunk name cannot be empty. Exiting..."
+    exit 1
 fi
 
-echo "[*] Step 2: Auto-detecting Trunks and applying Safe Overrides..."
-
-# پیدا کردن ترانک‌ها از sip_additional و تزریق به sip_custom_post با ویژگی (+)
-if [ -f "$SIP_ADDITIONAL" ]; then
-    # استخراج نام ترانک‌هایی که کانتکست from-trunk یا from-pstn دارند
-    TRUNKS=$(grep -E '\[.*\]' "$SIP_ADDITIONAL" | grep -v 'general' | tr -d '[]')
-    
-    if [ -z "$TRUNKS" ]; then
-        echo "[!] No standard SIP trunks found."
-    else
-        for TRUNK in $TRUNKS; do
-            # بررسی اینکه آیا قبلاً این ترانک اورراید شده یا خیر
-            if ! grep -q "\[$TRUNK\](+)" "$SIP_CUSTOM_POST" 2>/dev/null; then
-                echo -e "\n[$TRUNK](+)\ncontext=$CONTEXT_NAME" >> "$SIP_CUSTOM_POST"
-                echo "[+] Trunk [$TRUNK] overridden safely."
-            else
-                echo "[-] Trunk [$TRUNK] already configured. Skipping."
-            fi
-        done
-    fi
+# 2. Inject Dialplan into extensions_custom.conf if not exists
+if ! grep -q "\[tafreshicid\]" /etc/asterisk/extensions_custom.conf; then
+    echo "" >> /etc/asterisk/extensions_custom.conf
+    echo "[tafreshicid]" >> /etc/asterisk/extensions_custom.conf
+    echo "exten => _X.,1,NoOp(Fixing CallerID by Tafreshi)" >> /etc/asterisk/extensions_custom.conf
+    echo "exten => _X.,n,Set(CALLERID(num)=0\${CALLERID(num)})" >> /etc/asterisk/extensions_custom.conf
+    echo "exten => _X.,n,Goto(from-trunk,\${EXTEN},1)" >> /etc/asterisk/extensions_custom.conf
+    echo "Dialplan context [tafreshicid] added."
 else
-    echo "[!] $SIP_ADDITIONAL not found. Make sure trunks are configured in GUI first."
+    echo "Dialplan context [tafreshicid] already exists."
 fi
 
-echo "[*] Step 3: Reloading Asterisk Modules safely..."
+# 3. Override Trunk Context in sip_custom_post.conf
+if ! grep -q "\[$TRUNK_NAME\](+)" /etc/asterisk/sip_custom_post.conf; then
+    echo "" >> /etc/asterisk/sip_custom_post.conf
+    echo "[$TRUNK_NAME](+)" >> /etc/asterisk/sip_custom_post.conf
+    echo "context=tafreshicid" >> /etc/asterisk/sip_custom_post.conf
+    echo "Context for trunk [$TRUNK_NAME] successfully updated."
+else
+    echo "Warning: Trunk [$TRUNK_NAME] is already modified in sip_custom_post.conf"
+fi
+
+# 4. Reload Asterisk configurations
+echo "Reloading Asterisk..."
 asterisk -rx "dialplan reload"
 asterisk -rx "sip reload"
 
-echo "======================================================"
-echo "  Setup Completed Successfully! No DB changes made.   "
-echo "======================================================"
+echo "=========================================="
+echo "        Installation Completed!           "
+echo "=========================================="
